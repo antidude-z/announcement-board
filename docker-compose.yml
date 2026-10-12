@@ -29,9 +29,9 @@ services:
       UPLOAD_DIR: /tmp/uploads
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
       OTP_ISSUER_MODE: ${OTP_ISSUER_MODE:-local}
-      ALLOWLIST_STORE_MODE: ${ALLOWLIST_STORE_MODE:-local}
+      BOT_MODE: ${BOT_MODE:-internal}
       INTERNAL_BASE_URL: ${INTERNAL_BASE_URL:-http://127.0.0.1:8000}
-      BOT_SERVICE_URL: ${BOT_SERVICE_URL:-http://127.0.0.1:8000}
+      BOT_SERVICE_URL: ${BOT_SERVICE_URL:-http://bot:8001}
       BOT_DATABASE_URL: ${BOT_DATABASE_URL:-postgresql+asyncpg://board:board@db:5432/board_bot}
       ALLOWLIST_DUAL_WRITE: ${ALLOWLIST_DUAL_WRITE:-true}
       ALLOWLIST_READ_SOURCE: ${ALLOWLIST_READ_SOURCE:-bot}
@@ -39,6 +39,19 @@ services:
       - uploads:/tmp/uploads
     ports:
       - "8000:8000"
+
+  bot:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - db
+    environment:
+      BOT_DATABASE_URL: ${BOT_DATABASE_URL:-postgresql+asyncpg://board:board@db:5432/board_bot}
+      INTERNAL_BASE_URL: ${INTERNAL_BASE_URL:-http://backend:8000}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    command: ["uv", "run", "uvicorn", "bot_service.app:app", "--host", "0.0.0.0", "--port", "8001"]
 
   frontend:
     build: ./frontend

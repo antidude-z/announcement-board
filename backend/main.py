@@ -115,43 +115,43 @@ class PostIn(BaseModel):
     video_url: str = ""
 
 
+BOT_MODE = os.getenv("BOT_MODE", "internal")  # internal | external
+BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://bot:8001")
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8000")
-BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://127.0.0.1:8000")
 OTP_ISSUER_MODE = os.getenv("OTP_ISSUER_MODE", "local")
-ALLOWLIST_STORE_MODE = os.getenv("ALLOWLIST_STORE_MODE", "local")
-
-LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
-
-BOT_DATABASE_URL = os.getenv(
-    "BOT_DATABASE_URL", "postgresql+asyncpg://board:board@db:5432/board_bot"
-)
 ALLOWLIST_DUAL_WRITE = os.getenv("ALLOWLIST_DUAL_WRITE", "true").lower() == "true"
 ALLOWLIST_READ_SOURCE = os.getenv("ALLOWLIST_READ_SOURCE", "bot")
 
-bot_engine = create_async_engine(BOT_DATABASE_URL, pool_pre_ping=True)
-BotSessionLocal = async_sessionmaker(bot_engine, expire_on_commit=False)
+LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
+LEGACY_ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)
 
-LEGACY_ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)  # старая таблица в БД монолита
-BOT_ALLOWLIST_STORE = SqlAllowlistStore(BotSessionLocal)      # новая копия в БД бота
+bot_engine = None
 
-if ALLOWLIST_READ_SOURCE == "legacy":
-    _read_store, _mirror_store = LEGACY_ALLOWLIST_STORE, BOT_ALLOWLIST_STORE
+if BOT_MODE == "external":
+    # Шаг 4: allowlist живёт в bot-service и его БД.
+    # Монолит не открывает соединений в БД бота и не запускает polling.
+    LOCAL_ALLOWLIST_STORE = LEGACY_ALLOWLIST_STORE
+    ALLOWLIST_STORE = HttpAllowlistStore(BOT_SERVICE_URL)
+    OTP_ISSUER = LOCAL_OTP_ISSUER
+    print("BOT_MODE=external: polling and allowlist API run in bot-service")
 else:
-    _read_store, _mirror_store = BOT_ALLOWLIST_STORE, LEGACY_ALLOWLIST_STORE
+    bot_engine = create_async_engine(BOT_DATABASE_URL, pool_pre_ping=True)
+    BotSessionLocal = async_sessionmaker(bot_engine, expire_on_commit=False)
+    BOT_ALLOWLIST_STORE = SqlAllowlistStore(BotSessionLocal)
 
-LOCAL_ALLOWLIST_STORE = (
-    DualWriteAllowlistStore(_read_store, _mirror_store) if ALLOWLIST_DUAL_WRITE else _read_store
-)
+    if ALLOWLIST_READ_SOURCE == "legacy":
+        _read_store, _mirror_store = LEGACY_ALLOWLIST_STORE, BOT_ALLOWLIST_STORE
+    else:
+        _read_store, _mirror_store = BOT_ALLOWLIST_STORE, LEGACY_ALLOWLIST_STORE
 
-# Серверная сторона внутренних API всегда на локальных адаптерах.
-# Потребители выбирают реализацию флагами: local (in-process) или http (контракт).
-OTP_ISSUER = LOCAL_OTP_ISSUER if OTP_ISSUER_MODE == "local" else HttpOtpIssuer(INTERNAL_BASE_URL)
-ALLOWLIST_STORE = (
-    LOCAL_ALLOWLIST_STORE if ALLOWLIST_STORE_MODE == "local" else HttpAllowlistStore(BOT_SERVICE_URL)
-)
+    LOCAL_ALLOWLIST_STORE = (
+        DualWriteAllowlistStore(_read_store, _mirror_store) if ALLOWLIST_DUAL_WRITE else _read_store
+    )
+    ALLOWLIST_STORE = LOCAL_ALLOWLIST_STORE
+    OTP_ISSUER = LOCAL_OTP_ISSUER if OTP_ISSUER_MODE == "local" else HttpOtpIssuer(INTERNAL_BASE_URL)
 
-TG_RATE_LIMITER = TgRateLimiter(max_requests=5, window_seconds=60)
-DP.include_router(create_router(OTP_ISSUER, ALLOWLIST_STORE, TG_RATE_LIMITER))
+    TG_RATE_LIMITER = TgRateLimiter(max_requests=5, window_seconds=60)
+    DP.include_router(create_router(OTP_ISSUER, ALLOWLIST_STORE, TG_RATE_LIMITER))
 
 
 def is_rate_limited(key: str, max_requests: int = 5, window_seconds: int = 60) -> bool:
@@ -229,13 +229,14 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(BotBase.metadata.create_all)
         await conn.run_sync(OtpBase.metadata.create_all)
 
-    try:
-        async with bot_engine.begin() as conn:
-            await conn.run_sync(BotBase.metadata.create_all)
-    except Exception as exc:
-        raise RuntimeError(
-            "Bot database is not ready. Run first: python scripts/prepare_bot_db.py"
-        ) from exc
+    if bot_engine is not None:
+        try:
+            async with bot_engine.begin() as conn:
+                await conn.run_sync(BotBase.metadata.create_all)
+        except Exception as exc:
+            raise RuntimeError(
+                "Bot database is not ready. Run first: python scripts/prepare_bot_db.py"
+            ) from exc
 
     async with AsyncSessionLocal() as session:
         admin = await session.get(AdminCredential, 1)
@@ -248,17 +249,20 @@ async def lifespan(app: FastAPI):
             )
             await session.commit()
 
-    if TELEGRAM_BOT_TOKEN:
-        try:
-            BOT = Bot(token=TELEGRAM_BOT_TOKEN)
-            logger.info("Starting Telegram bot polling...")
-            BOT_POLL_TASK = asyncio.create_task(_run_bot_polling())
-        except Exception:
-            logger.exception("Failed to initialize Telegram bot")
-            BOT = None
-            BOT_POLL_TASK = None
+    if BOT_MODE == "internal":
+        if TELEGRAM_BOT_TOKEN:
+            try:
+                BOT = Bot(token=TELEGRAM_BOT_TOKEN)
+                logger.info("Starting Telegram bot polling (monolith, internal mode)...")
+                BOT_POLL_TASK = asyncio.create_task(_run_bot_polling())
+            except Exception:
+                logger.exception("Failed to initialize Telegram bot")
+                BOT = None
+                BOT_POLL_TASK = None
+        else:
+            logger.warning("TELEGRAM_BOT_TOKEN is empty/whitespace; Telegram bot disabled")
     else:
-        logger.warning("TELEGRAM_BOT_TOKEN is empty/whitespace; Telegram bot disabled")
+        logger.info("BOT_MODE=external: Telegram polling runs in bot-service")
 
     yield
 
@@ -277,13 +281,16 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Error closing bot session")
 
-    await bot_engine.dispose()
+    if bot_engine is not None:
+        await bot_engine.dispose()
 
 
 app = FastAPI(title="Announcement Board Backend", lifespan=lifespan)
 
 app.include_router(create_otp_router(LOCAL_OTP_ISSUER))
-app.include_router(create_allowlist_router(LOCAL_ALLOWLIST_STORE))
+if BOT_MODE == "internal":
+    # В external этот API живёт в bot-service (bot/api.py уехал туда как есть).
+    app.include_router(create_allowlist_router(LOCAL_ALLOWLIST_STORE))
 
 app.add_middleware(
     CORSMiddleware,

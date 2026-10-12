@@ -4,6 +4,7 @@
 Безопасно перезапускать; подходит для синхронизации дрейфа при dual-write.
 """
 import asyncio
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -36,28 +37,28 @@ async def ensure_database() -> None:
         await conn.close()
 
 
-async def create_tables_and_copy() -> int:
-    bot_engine = create_async_engine(BOT_DB_URL)
-    mono_engine = create_async_engine(MONOLITH_DB_URL)
+async def copy_rows(src_url: str, dst_url: str, ensure_tables_at_dst: bool = True) -> int:
+    src_engine = create_async_engine(src_url)
+    dst_engine = create_async_engine(dst_url)
 
-    async with bot_engine.begin() as conn:
-        await conn.run_sync(BotBase.metadata.create_all)
+    if ensure_tables_at_dst:
+        async with dst_engine.begin() as conn:
+            await conn.run_sync(BotBase.metadata.create_all)
 
-    mono_session_factory = async_sessionmaker(mono_engine, expire_on_commit=False)
-    bot_session_factory = async_sessionmaker(bot_engine, expire_on_commit=False)
+    src_factory = async_sessionmaker(src_engine, expire_on_commit=False)
+    dst_factory = async_sessionmaker(dst_engine, expire_on_commit=False)
 
     synced = 0
-    async with mono_session_factory() as mono_session:
-        rows = (await mono_session.execute(select(TelegramAllowlist))).scalars().all()
-
-        async with bot_session_factory() as bot_session:
+    async with src_factory() as src_session:
+        rows = (await src_session.execute(select(TelegramAllowlist))).scalars().all()
+        async with dst_factory() as dst_session:
             for row in rows:
-                existing = await bot_session.get(TelegramAllowlist, row.telegram_user_id)
+                existing = await dst_session.get(TelegramAllowlist, row.telegram_user_id)
                 if existing:
                     existing.username = row.username
                     existing.added_at = row.added_at
                 else:
-                    bot_session.add(
+                    dst_session.add(
                         TelegramAllowlist(
                             telegram_user_id=row.telegram_user_id,
                             username=row.username,
@@ -65,18 +66,31 @@ async def create_tables_and_copy() -> int:
                         )
                     )
                 synced += 1
-            await bot_session.commit()
+            await dst_session.commit()
 
-    await bot_engine.dispose()
-    await mono_engine.dispose()
+    await src_engine.dispose()
+    await dst_engine.dispose()
     return synced
 
 
 async def main() -> None:
-    await ensure_database()
-    synced = await create_tables_and_copy()
-    print(f"allowlist rows synced: {synced}")
+    parser = argparse.ArgumentParser(
+        description="Sync telegram_allowlist between monolith DB and bot DB"
+    )
+    parser.add_argument(
+        "--reverse",
+        action="store_true",
+        help="copy bot DB -> monolith DB (rollback sync after BOT_MODE=external)",
+    )
+    args = parser.parse_args()
 
+    if args.reverse:
+        synced = await copy_rows(BOT_DB_URL, MONOLITH_DB_URL, ensure_tables_at_dst=False)
+        print(f"reverse sync (bot -> monolith) rows: {synced}")
+    else:
+        await ensure_database()
+        synced = await copy_rows(MONOLITH_DB_URL, BOT_DB_URL)
+        print(f"allowlist rows synced (monolith -> bot): {synced}")
 
 if __name__ == "__main__":
     asyncio.run(main())

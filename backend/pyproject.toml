@@ -26,7 +26,7 @@ dev = [
 ]
 
 [tool.importlinter]
-root_packages = ["main", "bot", "otp", "ports", "m2m"]
+root_packages = ["main", "bot", "otp", "ports", "m2m", "bot_service"]
 
 [[tool.importlinter.contracts]]
 name = "bot must not know about monolith or otp"
@@ -39,3 +39,15 @@ name = "otp must not know about monolith or bot"
 type = "forbidden"
 source_modules = ["otp"]
 forbidden_modules = ["main", "bot"]
+
+[[tool.importlinter.contracts]]
+name = "bot_service must not import the monolith or otp"
+type = "forbidden"
+source_modules = ["bot_service"]
+forbidden_modules = ["main", "otp"]
+
+[[tool.importlinter.contracts]]
+name = "monolith must not import bot_service"
+type = "forbidden"
+source_modules = ["main"]
+forbidden_modules = ["bot_service"]
