@@ -26,7 +26,18 @@ dev = [
 ]
 
 [tool.importlinter]
-root_packages = ["main", "bot", "otp", "auth", "ports", "m2m", "hashing", "ratelimit", "bot_service"]
+root_packages = [
+    "main",
+    "bot",
+    "otp",
+    "auth",
+    "ports",
+    "m2m",
+    "hashing",
+    "ratelimit",
+    "bot_service",
+    "integrations",
+]
 
 [[tool.importlinter.contracts]]
 name = "bot must not know about monolith, otp or auth"
@@ -63,3 +74,16 @@ name = "monolith must not import aiogram (polling lives in bot-service)"
 type = "forbidden"
 source_modules = ["main"]
 forbidden_modules = ["aiogram"]
+
+[[tool.importlinter.contracts]]
+name = "backend contexts must not import bot package"
+type = "forbidden"
+source_modules = [
+    "main",
+    "auth",
+    "otp",
+    "integrations",
+]
+forbidden_modules = [
+    "bot",
+]

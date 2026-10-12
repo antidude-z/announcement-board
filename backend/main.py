@@ -24,7 +24,10 @@ from auth import (
     require_authenticated,
 )
 from auth.tokens import SessionPrincipal
-from bot import HttpAllowlistStore
+from integrations.telegram_allowlist import (
+    HttpTelegramAllowlistGateway,
+    TelegramAllowlistGateway,
+)
 from otp import OtpBase, SqlOtpIssuer, SqlOtpVerifier
 from otp.api import create_otp_router
 from ratelimit import InMemoryRateLimiter
@@ -78,7 +81,9 @@ class PostIn(BaseModel):
 BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://bot:8001")
 
 LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
-ALLOWLIST_STORE = HttpAllowlistStore(BOT_SERVICE_URL)
+TELEGRAM_ALLOWLIST_GATEWAY: TelegramAllowlistGateway = HttpTelegramAllowlistGateway(
+    BOT_SERVICE_URL
+)
 
 ADMIN_REPO = SqlAdminCredentialRepository(AsyncSessionLocal)
 OTP_VERIFIER = SqlOtpVerifier(AsyncSessionLocal)
@@ -270,7 +275,7 @@ async def delete_post(
 
 @app.get("/api/telegram-users")
 async def list_telegram_users(principal: SessionPrincipal = Depends(require_admin)):
-    entries = await ALLOWLIST_STORE.list_all()
+    entries = await TELEGRAM_ALLOWLIST_GATEWAY.list_all()
     return {
         "items": [
             {
@@ -291,7 +296,7 @@ async def add_telegram_user(
     if payload.telegram_user_id <= 0:
         return JSONResponse(status_code=400, content={"detail": "Invalid Telegram user id"})
 
-    created = await ALLOWLIST_STORE.add(payload.telegram_user_id)
+    created = await TELEGRAM_ALLOWLIST_GATEWAY.add(payload.telegram_user_id)
     return {"telegram_user_id": payload.telegram_user_id, "already_exists": not created}
 
 
@@ -300,7 +305,7 @@ async def delete_telegram_user(
     telegram_user_id: int,
     principal: SessionPrincipal = Depends(require_admin),
 ):
-    removed = await ALLOWLIST_STORE.remove(telegram_user_id)
+    removed = await TELEGRAM_ALLOWLIST_GATEWAY.remove(telegram_user_id)
     if not removed:
         return JSONResponse(status_code=404, content={"detail": "Telegram user not found"})
     return {"ok": True}
