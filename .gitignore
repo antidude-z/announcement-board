@@ -27,4 +27,5 @@ Thumbs.db
 .idea/
 .vscode/
 
-*repo*
+repo_snapshot.txt
+snapshot_repo.py
