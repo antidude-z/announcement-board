@@ -16,6 +16,7 @@ from bot import (
     TgRateLimiter,
     create_allowlist_router,
     create_router,
+    DualWriteAllowlistStore,
 )
 from otp import OtpBase, SqlOtpIssuer
 from otp.api import create_otp_router
@@ -120,7 +121,27 @@ OTP_ISSUER_MODE = os.getenv("OTP_ISSUER_MODE", "local")
 ALLOWLIST_STORE_MODE = os.getenv("ALLOWLIST_STORE_MODE", "local")
 
 LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
-LOCAL_ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)
+
+BOT_DATABASE_URL = os.getenv(
+    "BOT_DATABASE_URL", "postgresql+asyncpg://board:board@db:5432/board_bot"
+)
+ALLOWLIST_DUAL_WRITE = os.getenv("ALLOWLIST_DUAL_WRITE", "true").lower() == "true"
+ALLOWLIST_READ_SOURCE = os.getenv("ALLOWLIST_READ_SOURCE", "bot")
+
+bot_engine = create_async_engine(BOT_DATABASE_URL, pool_pre_ping=True)
+BotSessionLocal = async_sessionmaker(bot_engine, expire_on_commit=False)
+
+LEGACY_ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)  # старая таблица в БД монолита
+BOT_ALLOWLIST_STORE = SqlAllowlistStore(BotSessionLocal)      # новая копия в БД бота
+
+if ALLOWLIST_READ_SOURCE == "legacy":
+    _read_store, _mirror_store = LEGACY_ALLOWLIST_STORE, BOT_ALLOWLIST_STORE
+else:
+    _read_store, _mirror_store = BOT_ALLOWLIST_STORE, LEGACY_ALLOWLIST_STORE
+
+LOCAL_ALLOWLIST_STORE = (
+    DualWriteAllowlistStore(_read_store, _mirror_store) if ALLOWLIST_DUAL_WRITE else _read_store
+)
 
 # Серверная сторона внутренних API всегда на локальных адаптерах.
 # Потребители выбирают реализацию флагами: local (in-process) или http (контракт).
@@ -208,6 +229,14 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(BotBase.metadata.create_all)
         await conn.run_sync(OtpBase.metadata.create_all)
 
+    try:
+        async with bot_engine.begin() as conn:
+            await conn.run_sync(BotBase.metadata.create_all)
+    except Exception as exc:
+        raise RuntimeError(
+            "Bot database is not ready. Run first: python scripts/prepare_bot_db.py"
+        ) from exc
+
     async with AsyncSessionLocal() as session:
         admin = await session.get(AdminCredential, 1)
         if not admin:
@@ -247,6 +276,8 @@ async def lifespan(app: FastAPI):
             await BOT.session.close()
         except Exception:
             logger.exception("Error closing bot session")
+
+    await bot_engine.dispose()
 
 
 app = FastAPI(title="Announcement Board Backend", lifespan=lifespan)

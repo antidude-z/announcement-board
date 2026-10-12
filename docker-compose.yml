@@ -32,6 +32,9 @@ services:
       ALLOWLIST_STORE_MODE: ${ALLOWLIST_STORE_MODE:-local}
       INTERNAL_BASE_URL: ${INTERNAL_BASE_URL:-http://127.0.0.1:8000}
       BOT_SERVICE_URL: ${BOT_SERVICE_URL:-http://127.0.0.1:8000}
+      BOT_DATABASE_URL: ${BOT_DATABASE_URL:-postgresql+asyncpg://board:board@db:5432/board_bot}
+      ALLOWLIST_DUAL_WRITE: ${ALLOWLIST_DUAL_WRITE:-true}
+      ALLOWLIST_READ_SOURCE: ${ALLOWLIST_READ_SOURCE:-bot}
     volumes:
       - uploads:/tmp/uploads
     ports:
