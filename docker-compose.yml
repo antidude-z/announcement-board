@@ -25,12 +25,26 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-real-life}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-ChangeMe_Admin_123!}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
+      BOT_SERVICE_URL: ${BOT_SERVICE_URL:-http://bot:8001}
       UPLOAD_DIR: /tmp/uploads
     volumes:
       - uploads:/tmp/uploads
     ports:
       - "8000:8000"
+
+  bot:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - db
+    environment:
+      BOT_DATABASE_URL: ${BOT_DATABASE_URL:-postgresql+asyncpg://board:board@db:5432/board_bot}
+      INTERNAL_BASE_URL: ${INTERNAL_BASE_URL:-http://backend:8000}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    command: ["uv", "run", "uvicorn", "bot_service.app:app", "--host", "0.0.0.0", "--port", "8001"]
 
   frontend:
     build: ./frontend

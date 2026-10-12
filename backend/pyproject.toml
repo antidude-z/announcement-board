@@ -13,7 +13,47 @@ dependencies = [
     "aiogram>=3.13.0",
     "python-multipart>=0.0.9",
     "aiofiles>=24.1.0",
+    "httpx>=0.27"
 ]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.1",
+    "pytest>=8"
+]
+
+[tool.importlinter]
+root_packages = ["main", "bot", "otp", "ports", "m2m", "bot_service"]
+
+[[tool.importlinter.contracts]]
+name = "bot must not know about monolith or otp"
+type = "forbidden"
+source_modules = ["bot"]
+forbidden_modules = ["main", "otp"]
+
+[[tool.importlinter.contracts]]
+name = "otp must not know about monolith or bot"
+type = "forbidden"
+source_modules = ["otp"]
+forbidden_modules = ["main", "bot"]
+
+[[tool.importlinter.contracts]]
+name = "bot_service must not import the monolith or otp"
+type = "forbidden"
+source_modules = ["bot_service"]
+forbidden_modules = ["main", "otp"]
+
+[[tool.importlinter.contracts]]
+name = "monolith must not import bot_service"
+type = "forbidden"
+source_modules = ["main"]
+forbidden_modules = ["bot_service"]
+
+[[tool.importlinter.contracts]]
+name = "monolith must not import aiogram (polling lives in bot-service)"
+type = "forbidden"
+source_modules = ["main"]
+forbidden_modules = ["aiogram"]
