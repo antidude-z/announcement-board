@@ -1,13 +1,11 @@
 import secrets
 from datetime import timedelta
 
-from argon2 import PasswordHasher, Type
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from otp.models import OneTimePasscode, utcnow
-
-ph = PasswordHasher(type=Type.ID)
+from hashing import hash_secret
 
 
 class SqlOtpIssuer:
@@ -31,7 +29,7 @@ class SqlOtpIssuer:
 
             session.add(
                 OneTimePasscode(
-                    code_hash=ph.hash(code),
+                    code_hash=hash_secret(code),
                     revoked=False,
                     generated_by_telegram_id=telegram_user_id,
                     expires_at=utcnow() + timedelta(seconds=self._ttl_seconds),

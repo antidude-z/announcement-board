@@ -22,3 +22,10 @@ class AllowlistStore(Protocol):
 @runtime_checkable
 class OtpIssuer(Protocol):
     async def issue(self, telegram_user_id: int) -> str: ...
+
+
+@runtime_checkable
+class OtpVerifier(Protocol):
+    """Проверяет одноразовый код; возвращает id OTP при успехе, иначе None."""
+
+    async def verify(self, code: str) -> Optional[int]: ...

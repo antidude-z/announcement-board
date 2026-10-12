@@ -1,73 +1,55 @@
-import asyncio
 import logging
-import pathlib
-import secrets
-import uuid
 import os
+import pathlib
+import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 
-from bot import HttpAllowlistStore
-from otp import OtpBase, SqlOtpIssuer
-from otp.api import create_otp_router
-from otp.models import OneTimePasscode
-
 import aiofiles
-import jwt
-from argon2 import PasswordHasher, Type
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from fastapi import FastAPI, File, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import Boolean, BigInteger, Column, DateTime, Integer, String, Text, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import Column, DateTime, Integer, String, Text, or_, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
+
+from auth import (
+    AuthBase,
+    SqlAdminCredentialRepository,
+    create_auth_router,
+    require_admin,
+    require_authenticated,
+)
+from auth.tokens import SessionPrincipal
+from bot import HttpAllowlistStore
+from otp import OtpBase, SqlOtpIssuer, SqlOtpVerifier
+from otp.api import create_otp_router
+from ratelimit import InMemoryRateLimiter
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s"
 )
-
 logger = logging.getLogger("legacy-backend")
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://board:board@db:5432/board",
 )
-
-JWT_SECRET = os.getenv("JWT_SECRET") or secrets.token_hex(32)
-COOKIE_NAME = "session"
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
-
 ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "ChangeMe_Admin_123!")
-
 UPLOAD_DIR = pathlib.Path(os.getenv("UPLOAD_DIR", "/tmp/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# GLOBAL STATE
-RATE_CACHE = {}
-ACTIVE_SESSIONS = {}
-
-ph = PasswordHasher(type=Type.ID)
 Base = declarative_base()
-
 engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 def utcnow():
     return datetime.now(timezone.utc)
-
-
-class AdminCredential(Base):
-    __tablename__ = "admin_credentials"
-
-    id = Column(Integer, primary_key=True)
-    password_hash = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
 class Announcement(Base):
@@ -82,14 +64,6 @@ class Announcement(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
-class AdminLogin(BaseModel):
-    password: str
-
-
-class OtpVerify(BaseModel):
-    code: str
-
-
 class TelegramUserIn(BaseModel):
     telegram_user_id: int
 
@@ -100,54 +74,16 @@ class PostIn(BaseModel):
     tags: str = ""
     video_url: str = ""
 
+
 BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://bot:8001")
 
 LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
 ALLOWLIST_STORE = HttpAllowlistStore(BOT_SERVICE_URL)
 
-
-def is_rate_limited(key: str, max_requests: int = 5, window_seconds: int = 60) -> bool:
-    now = utcnow().timestamp()
-    entries = RATE_CACHE.get(key, [])
-    entries = [entry for entry in entries if now - entry < window_seconds]
-
-    if len(entries) >= max_requests:
-        RATE_CACHE[key] = entries
-        return True
-
-    entries.append(now)
-    RATE_CACHE[key] = entries
-    return False
-
-
-def create_session_token(role: str, subject: str) -> str:
-    jti = str(uuid.uuid4())
-    now = utcnow()
-    exp = now + timedelta(seconds=86400)
-
-    payload = {
-        "sub": subject,
-        "role": role,
-        "jti": jti,
-        "iat": now,
-        "exp": exp,
-    }
-
-    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-    ACTIVE_SESSIONS[jti] = exp.isoformat()
-    return token
-
-
-def set_session_cookie(response: JSONResponse, token: str) -> None:
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="strict",
-        secure=COOKIE_SECURE,
-        max_age=86400,
-        path="/",
-    )
+ADMIN_REPO = SqlAdminCredentialRepository(AsyncSessionLocal)
+OTP_VERIFIER = SqlOtpVerifier(AsyncSessionLocal)
+LOGIN_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
+OTP_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
 
 
 def serialize_announcement(post: Announcement) -> dict:
@@ -167,14 +103,9 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(OtpBase.metadata.create_all)
+        await conn.run_sync(AuthBase.metadata.create_all)
 
-    async with AsyncSessionLocal() as session:
-        admin = await session.get(AdminCredential, 1)
-        if not admin:
-            session.add(
-                AdminCredential(id=1, password_hash=ph.hash(ADMIN_INITIAL_PASSWORD))
-            )
-            await session.commit()
+    await ADMIN_REPO.ensure_master(ADMIN_INITIAL_PASSWORD)
 
     yield
 
@@ -184,6 +115,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Announcement Board Backend", lifespan=lifespan)
 
 app.include_router(create_otp_router(LOCAL_OTP_ISSUER))
+app.include_router(
+    create_auth_router(ADMIN_REPO, OTP_VERIFIER, LOGIN_LIMITER, OTP_LIMITER)
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -214,7 +148,7 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 async def root():
     return {
         "name": "announcement-board",
-        "mode": "legacy-monolith",
+        "mode": "modular-monolith",
         "health": "/api/health",
     }
 
@@ -224,137 +158,16 @@ async def health():
     return {"ok": True, "time": utcnow().isoformat()}
 
 
-@app.get("/api/me")
-async def me(request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return {"authenticated": False}
-
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return {"authenticated": False}
-
-    return {
-        "authenticated": True,
-        "role": payload.get("role"),
-        "sub": payload.get("sub"),
-    }
-
-
-@app.post("/api/logout")
-async def logout():
-    response = JSONResponse({"ok": True})
-    response.delete_cookie(
-        key=COOKIE_NAME,
-        path="/",
-        httponly=True,
-        samesite="strict",
-        secure=COOKIE_SECURE,
-    )
-    return response
-
-
-@app.post("/api/admin/login")
-async def admin_login(payload: AdminLogin, request: Request):
-    ip = request.client.host if request.client else "unknown"
-
-    if is_rate_limited(f"admin-login:{ip}", 5, 60):
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Too many login attempts. Try again later."},
-        )
-
-    async with AsyncSessionLocal() as session:
-        admin = await session.get(AdminCredential, 1)
-
-        if not admin:
-            return JSONResponse(status_code=401, content={"detail": "Invalid credentials"})
-
-        try:
-            ph.verify(admin.password_hash, payload.password)
-        except (VerifyMismatchError, InvalidHashError, ValueError):
-            return JSONResponse(status_code=401, content={"detail": "Invalid credentials"})
-
-        if ph.check_needs_rehash(admin.password_hash):
-            admin.password_hash = ph.hash(payload.password)
-            await session.commit()
-
-        token = create_session_token("admin", "admin")
-        response = JSONResponse({"ok": True, "role": "admin"})
-        set_session_cookie(response, token)
-        return response
-
-
-@app.post("/api/otp/verify")
-async def otp_verify(payload: OtpVerify, request: Request):
-    ip = request.client.host if request.client else "unknown"
-
-    if is_rate_limited(f"otp-verify:{ip}", 5, 60):
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Too many OTP attempts. Try again later."},
-        )
-
-    code = payload.code.strip().upper()
-
-    if len(code) != 8:
-        return JSONResponse(status_code=401, content={"detail": "Invalid passcode"})
-
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(OneTimePasscode).where(
-                OneTimePasscode.revoked == False,
-                OneTimePasscode.expires_at > utcnow(),
-            )
-        )
-        otp_rows = result.scalars().all()
-
-        matched = None
-
-        for otp in otp_rows:
-            try:
-                ph.verify(otp.code_hash, code)
-                matched = otp
-                break
-            except (VerifyMismatchError, InvalidHashError, ValueError):
-                continue
-
-        if not matched:
-            return JSONResponse(status_code=401, content={"detail": "Invalid passcode"})
-
-        matched.revoked = True
-        await session.commit()
-
-        token = create_session_token("user", f"otp:{matched.id}")
-        response = JSONResponse({"ok": True, "role": "user"})
-        set_session_cookie(response, token)
-        return response
-
-
 @app.get("/api/posts")
 async def list_posts(
-    request: Request,
+    principal: SessionPrincipal = Depends(require_authenticated),
     page: int = Query(1),
     limit: int = Query(10),
     q: Optional[str] = Query(None),
     tag: Optional[str] = Query(None),
 ):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if payload.get("role") not in ("user", "admin"):
-        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
-
     if page < 1:
         page = 1
-
     if limit < 1 or limit > 10:
         limit = 10
 
@@ -375,7 +188,6 @@ async def list_posts(
             stmt = stmt.where(Announcement.tags.ilike(f"%{tag}%"))
 
         stmt = stmt.offset((page - 1) * limit).limit(limit + 1)
-
         result = await session.execute(stmt)
         rows = result.scalars().all()
 
@@ -391,19 +203,10 @@ async def list_posts(
 
 
 @app.post("/api/posts")
-async def create_post(payload: PostIn, request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if jwt_payload.get("role") != "admin":
-        return JSONResponse(status_code=403, content={"detail": "Admin required"})
-
+async def create_post(
+    payload: PostIn,
+    principal: SessionPrincipal = Depends(require_admin),
+):
     title = payload.title.strip()
     body_md = payload.body_md.strip()
     tags = payload.tags.strip()
@@ -413,12 +216,7 @@ async def create_post(payload: PostIn, request: Request):
         return JSONResponse(status_code=400, content={"detail": "Title and body are required"})
 
     async with AsyncSessionLocal() as session:
-        post = Announcement(
-            title=title,
-            body_md=body_md,
-            tags=tags,
-            video_url=video_url,
-        )
+        post = Announcement(title=title, body_md=body_md, tags=tags, video_url=video_url)
         session.add(post)
         await session.commit()
         await session.refresh(post)
@@ -426,19 +224,11 @@ async def create_post(payload: PostIn, request: Request):
 
 
 @app.put("/api/posts/{post_id}")
-async def update_post(post_id: int, payload: PostIn, request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if jwt_payload.get("role") != "admin":
-        return JSONResponse(status_code=403, content={"detail": "Admin required"})
-
+async def update_post(
+    post_id: int,
+    payload: PostIn,
+    principal: SessionPrincipal = Depends(require_admin),
+):
     title = payload.title.strip()
     body_md = payload.body_md.strip()
     tags = payload.tags.strip()
@@ -464,19 +254,10 @@ async def update_post(post_id: int, payload: PostIn, request: Request):
 
 
 @app.delete("/api/posts/{post_id}")
-async def delete_post(post_id: int, request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if jwt_payload.get("role") != "admin":
-        return JSONResponse(status_code=403, content={"detail": "Admin required"})
-
+async def delete_post(
+    post_id: int,
+    principal: SessionPrincipal = Depends(require_admin),
+):
     async with AsyncSessionLocal() as session:
         post = await session.get(Announcement, post_id)
         if not post:
@@ -488,19 +269,7 @@ async def delete_post(post_id: int, request: Request):
 
 
 @app.get("/api/telegram-users")
-async def list_telegram_users(request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if jwt_payload.get("role") != "admin":
-        return JSONResponse(status_code=403, content={"detail": "Admin required"})
-
+async def list_telegram_users(principal: SessionPrincipal = Depends(require_admin)):
     entries = await ALLOWLIST_STORE.list_all()
     return {
         "items": [
@@ -515,19 +284,10 @@ async def list_telegram_users(request: Request):
 
 
 @app.post("/api/telegram-users")
-async def add_telegram_user(payload: TelegramUserIn, request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if jwt_payload.get("role") != "admin":
-        return JSONResponse(status_code=403, content={"detail": "Admin required"})
-
+async def add_telegram_user(
+    payload: TelegramUserIn,
+    principal: SessionPrincipal = Depends(require_admin),
+):
     if payload.telegram_user_id <= 0:
         return JSONResponse(status_code=400, content={"detail": "Invalid Telegram user id"})
 
@@ -536,40 +296,22 @@ async def add_telegram_user(payload: TelegramUserIn, request: Request):
 
 
 @app.delete("/api/telegram-users/{telegram_user_id}")
-async def delete_telegram_user(telegram_user_id: int, request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if jwt_payload.get("role") != "admin":
-        return JSONResponse(status_code=403, content={"detail": "Admin required"})
-
+async def delete_telegram_user(
+    telegram_user_id: int,
+    principal: SessionPrincipal = Depends(require_admin),
+):
     removed = await ALLOWLIST_STORE.remove(telegram_user_id)
     if not removed:
         return JSONResponse(status_code=404, content={"detail": "Telegram user not found"})
-    
     return {"ok": True}
 
 
 @app.post("/api/uploads")
-async def upload_image(request: Request, file: UploadFile = File(...)):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-    try:
-        jwt_payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Invalid session"})
-
-    if jwt_payload.get("role") != "admin":
-        return JSONResponse(status_code=403, content={"detail": "Admin required"})
-
+async def upload_image(
+    request: Request,
+    file: UploadFile = File(...),
+    principal: SessionPrincipal = Depends(require_admin),
+):
     filename = file.filename or ""
     suffix = pathlib.Path(filename).suffix.lower()
 
@@ -577,7 +319,6 @@ async def upload_image(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"detail": "Unsupported image type"})
 
     content = await file.read()
-
     if len(content) > 5 * 1024 * 1024:
         return JSONResponse(status_code=400, content={"detail": "File too large"})
 
