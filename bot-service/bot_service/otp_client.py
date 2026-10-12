@@ -1,7 +1,5 @@
 import httpx
 
-from bot_service.internal_auth import internal_headers
-
 
 class HttpOtpIssuer:
     """Клиент монолита: POST /internal/otp/issue."""
@@ -15,7 +13,6 @@ class HttpOtpIssuer:
             resp = await client.post(
                 f"{self._base_url}/internal/otp/issue",
                 json={"telegram_user_id": telegram_user_id},
-                headers=internal_headers(),
             )
             resp.raise_for_status()
             return resp.json()["code"]
