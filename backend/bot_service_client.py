@@ -4,8 +4,6 @@ from typing import Optional
 
 import httpx
 
-from m2m import internal_headers
-
 
 @dataclass(frozen=True, slots=True)
 class TelegramAllowlistEntry:
@@ -35,7 +33,6 @@ class BotServiceClient:
             response = await client.request(
                 method,
                 f"{self._base_url}{path}",
-                headers=internal_headers(),
                 **kwargs,
             )
             response.raise_for_status()
