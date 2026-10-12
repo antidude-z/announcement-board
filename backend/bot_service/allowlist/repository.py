@@ -1,11 +1,11 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ports import AllowlistEntry
-from bot.models import TelegramAllowlist
+from bot_service.allowlist.dto import AllowlistEntry
+from bot_service.allowlist.models import TelegramAllowlist
 
 
-class SqlAllowlistStore:
+class SqlAllowlistRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._session_factory = session_factory
 
@@ -33,6 +33,7 @@ class SqlAllowlistStore:
             existing = await session.get(TelegramAllowlist, telegram_user_id)
             if existing:
                 return False
+
             session.add(TelegramAllowlist(telegram_user_id=telegram_user_id))
             await session.commit()
             return True
@@ -42,6 +43,7 @@ class SqlAllowlistStore:
             entry = await session.get(TelegramAllowlist, telegram_user_id)
             if not entry:
                 return False
+
             await session.delete(entry)
             await session.commit()
             return True

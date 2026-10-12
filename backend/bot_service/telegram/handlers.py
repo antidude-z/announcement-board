@@ -3,16 +3,16 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command, CommandStart
 
-from bot.ports import PasscodeIssuer
-from bot.rate_limit import TgRateLimiter
-from ports import AllowlistStore
+from bot_service.allowlist.ports import AllowlistRepository
+from bot_service.integrations.otp.ports import PasscodeIssuer
+from bot_service.telegram.rate_limit import TgRateLimiter
 
-logger = logging.getLogger("legacy-backend.bot")
+logger = logging.getLogger("bot-service.telegram")
 
 
 def create_router(
     passcode_issuer: PasscodeIssuer,
-    allowlist_store: AllowlistStore,
+    allowlist_repository: AllowlistRepository,
     rate_limiter: TgRateLimiter,
 ) -> Router:
     router = Router()
@@ -31,13 +31,13 @@ def create_router(
             await message.answer("Rate limited. Try again in a minute.")
             return
 
-        if not await allowlist_store.is_allowed(telegram_id):
+        if not await allowlist_repository.is_allowed(telegram_id):
             logger.info("telegram_id=%s not in allowlist", telegram_id)
             await message.answer("Access Denied: Telegram ID is not authorized.")
             return
 
         if username:
-            await allowlist_store.set_username(telegram_id, username)
+            await allowlist_repository.set_username(telegram_id, username)
 
         code = await passcode_issuer.issue(telegram_id)
         logger.info("issued OTP for telegram_id=%s", telegram_id)

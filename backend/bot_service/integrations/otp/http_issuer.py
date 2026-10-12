@@ -1,6 +1,6 @@
 import httpx
 
-from m2m import internal_headers
+from bot_service.common.m2m import internal_headers
 
 
 class HttpOtpIssuer:

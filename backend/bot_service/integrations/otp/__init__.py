@@ -1,0 +1,1 @@
+"""OTP integration adapters for bot-service."""

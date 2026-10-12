@@ -1,0 +1,1 @@
+"""Telegram allowlist bounded context for bot-service."""
