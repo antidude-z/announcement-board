@@ -1,0 +1,1 @@
+"""Telegram bot delivery context for bot-service."""

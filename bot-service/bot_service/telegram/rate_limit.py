@@ -9,6 +9,7 @@ class TgRateLimiter:
 
     def is_limited(self, telegram_user_id: int) -> bool:
         now = time.monotonic()
+
         entries = [
             ts
             for ts in self._cache.get(telegram_user_id, [])

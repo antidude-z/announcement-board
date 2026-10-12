@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from m2m import require_internal_token
-from ports import OtpIssuer
+from otp.core import SqlOtpIssuer
 
 logger = logging.getLogger("legacy-backend.otp")
 
@@ -13,7 +13,7 @@ class IssueRequest(BaseModel):
     telegram_user_id: int
 
 
-def create_otp_router(issuer: OtpIssuer) -> APIRouter:
+def create_otp_router(issuer: SqlOtpIssuer) -> APIRouter:
     router = APIRouter(tags=["internal-otp"])
 
     @router.post("/internal/otp/issue", dependencies=[Depends(require_internal_token)])

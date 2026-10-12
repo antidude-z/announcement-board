@@ -24,7 +24,7 @@ from auth import (
     require_authenticated,
 )
 from auth.tokens import SessionPrincipal
-from bot import HttpAllowlistStore
+from bot_service_client import BotServiceClient
 from otp import OtpBase, SqlOtpIssuer, SqlOtpVerifier
 from otp.api import create_otp_router
 from ratelimit import InMemoryRateLimiter
@@ -77,11 +77,11 @@ class PostIn(BaseModel):
 
 BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://bot:8001")
 
-LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
-ALLOWLIST_STORE = HttpAllowlistStore(BOT_SERVICE_URL)
+PASSCODE_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
+BOT_SERVICE_CLIENT = BotServiceClient(BOT_SERVICE_URL)
 
 ADMIN_REPO = SqlAdminCredentialRepository(AsyncSessionLocal)
-OTP_VERIFIER = SqlOtpVerifier(AsyncSessionLocal)
+PASSCODE_VERIFIER = SqlOtpVerifier(AsyncSessionLocal)
 LOGIN_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
 OTP_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
 
@@ -114,9 +114,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Announcement Board Backend", lifespan=lifespan)
 
-app.include_router(create_otp_router(LOCAL_OTP_ISSUER))
+app.include_router(create_otp_router(PASSCODE_ISSUER))
 app.include_router(
-    create_auth_router(ADMIN_REPO, OTP_VERIFIER, LOGIN_LIMITER, OTP_LIMITER)
+    create_auth_router(ADMIN_REPO, PASSCODE_VERIFIER, LOGIN_LIMITER, OTP_LIMITER)
 )
 
 app.add_middleware(
@@ -270,7 +270,7 @@ async def delete_post(
 
 @app.get("/api/telegram-users")
 async def list_telegram_users(principal: SessionPrincipal = Depends(require_admin)):
-    entries = await ALLOWLIST_STORE.list_all()
+    entries = await BOT_SERVICE_CLIENT.list_telegram_users()
     return {
         "items": [
             {
@@ -291,7 +291,7 @@ async def add_telegram_user(
     if payload.telegram_user_id <= 0:
         return JSONResponse(status_code=400, content={"detail": "Invalid Telegram user id"})
 
-    created = await ALLOWLIST_STORE.add(payload.telegram_user_id)
+    created = await BOT_SERVICE_CLIENT.add_telegram_user(payload.telegram_user_id)
     return {"telegram_user_id": payload.telegram_user_id, "already_exists": not created}
 
 
@@ -300,7 +300,7 @@ async def delete_telegram_user(
     telegram_user_id: int,
     principal: SessionPrincipal = Depends(require_admin),
 ):
-    removed = await ALLOWLIST_STORE.remove(telegram_user_id)
+    removed = await BOT_SERVICE_CLIENT.remove_telegram_user(telegram_user_id)
     if not removed:
         return JSONResponse(status_code=404, content={"detail": "Telegram user not found"})
     return {"ok": True}

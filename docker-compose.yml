@@ -34,7 +34,7 @@ services:
       - "8000:8000"
 
   bot:
-    build: ./backend
+    build: ./bot-service
     restart: unless-stopped
     depends_on:
       - backend
@@ -44,7 +44,6 @@ services:
       INTERNAL_BASE_URL: ${INTERNAL_BASE_URL:-http://backend:8000}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-    command: ["uv", "run", "uvicorn", "bot_service.app:app", "--host", "0.0.0.0", "--port", "8001"]
 
   frontend:
     build: ./frontend

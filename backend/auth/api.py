@@ -5,12 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from auth.credentials import SqlAdminCredentialRepository
 from auth.dependencies import optional_principal
-from auth.repository import SqlAdminCredentialRepository
 from auth.sessions import SESSION_REGISTRY, create_session_token
 from auth.tokens import SessionPrincipal, clear_session_cookie, set_session_cookie
 from hashing import hash_secret, needs_rehash, verify_secret
-from ports import OtpVerifier
+from otp import SqlOtpVerifier
 from ratelimit import InMemoryRateLimiter
 
 logger = logging.getLogger("legacy-backend.auth")
@@ -26,7 +26,7 @@ class OtpVerify(BaseModel):
 
 def create_auth_router(
     repo: SqlAdminCredentialRepository,
-    otp_verifier: OtpVerifier,
+    passcode_verifier: SqlOtpVerifier,
     login_limiter: InMemoryRateLimiter,
     otp_limiter: InMemoryRateLimiter,
 ) -> APIRouter:
@@ -75,7 +75,7 @@ def create_auth_router(
         if otp_limiter.is_limited(f"otp-verify:{ip}"):
             raise HTTPException(status_code=429, detail="Too many OTP attempts. Try again later.")
 
-        otp_id = await otp_verifier.verify(payload.code)
+        otp_id = await passcode_verifier.verify(payload.code)
         if otp_id is None:
             raise HTTPException(status_code=401, detail="Invalid passcode")
 

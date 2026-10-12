@@ -3,10 +3,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from m2m import require_internal_token
-from ports import AllowlistStore
+from bot_service.allowlist.repository import SqlAllowlistRepository
+from bot_service.internal_auth import require_internal_token
 
-logger = logging.getLogger("legacy-backend.bot.api")
+logger = logging.getLogger("bot-service.allowlist.api")
 
 
 class AddRequest(BaseModel):
@@ -17,12 +17,13 @@ class UsernameRequest(BaseModel):
     username: str
 
 
-def create_allowlist_router(store: AllowlistStore) -> APIRouter:
+def create_allowlist_router(repository: SqlAllowlistRepository) -> APIRouter:
     router = APIRouter(tags=["internal-allowlist"])
 
     @router.get("/internal/allowlist", dependencies=[Depends(require_internal_token)])
     async def list_all():
-        entries = await store.list_all()
+        entries = await repository.list_all()
+
         return {
             "items": [
                 {
@@ -39,11 +40,11 @@ def create_allowlist_router(store: AllowlistStore) -> APIRouter:
         dependencies=[Depends(require_internal_token)],
     )
     async def status(telegram_user_id: int):
-        return {"allowed": await store.is_allowed(telegram_user_id)}
+        return {"allowed": await repository.is_allowed(telegram_user_id)}
 
     @router.post("/internal/allowlist", dependencies=[Depends(require_internal_token)])
     async def add(payload: AddRequest):
-        created = await store.add(payload.telegram_user_id)
+        created = await repository.add(payload.telegram_user_id)
         return {"telegram_user_id": payload.telegram_user_id, "created": created}
 
     @router.delete(
@@ -51,7 +52,7 @@ def create_allowlist_router(store: AllowlistStore) -> APIRouter:
         dependencies=[Depends(require_internal_token)],
     )
     async def remove(telegram_user_id: int):
-        removed = await store.remove(telegram_user_id)
+        removed = await repository.remove(telegram_user_id)
         if not removed:
             raise HTTPException(status_code=404, detail="Telegram user not found")
         return {"ok": True}
@@ -61,7 +62,7 @@ def create_allowlist_router(store: AllowlistStore) -> APIRouter:
         dependencies=[Depends(require_internal_token)],
     )
     async def set_username(telegram_user_id: int, payload: UsernameRequest):
-        await store.set_username(telegram_user_id, payload.username)
+        await repository.set_username(telegram_user_id, payload.username)
         return {"ok": True}
 
     return router
