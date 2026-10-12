@@ -3,7 +3,7 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command, CommandStart
 
-from bot.interfaces import AllowlistStore, OtpIssuer
+from ports import AllowlistStore, OtpIssuer
 from bot.rate_limit import TgRateLimiter
 
 logger = logging.getLogger("legacy-backend.bot")

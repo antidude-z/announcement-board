@@ -8,7 +8,18 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from bot import BotBase, SqlAllowlistStore, TgRateLimiter, create_router
+from bot import (
+    BotBase,
+    HttpAllowlistStore,
+    HttpOtpIssuer,
+    SqlAllowlistStore,
+    TgRateLimiter,
+    create_allowlist_router,
+    create_router,
+)
+from otp import OtpBase, SqlOtpIssuer
+from otp.api import create_otp_router
+from otp.models import OneTimePasscode
 
 import aiofiles
 import jwt
@@ -72,17 +83,6 @@ class AdminCredential(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
-class OneTimePasscode(Base):
-    __tablename__ = "one_time_passcodes"
-
-    id = Column(Integer, primary_key=True)
-    code_hash = Column(String, nullable=False)
-    revoked = Column(Boolean, default=False, nullable=False)
-    generated_by_telegram_id = Column(BigInteger, nullable=True)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=utcnow)
-
-
 class Announcement(Base):
     __tablename__ = "announcements"
 
@@ -114,43 +114,22 @@ class PostIn(BaseModel):
     video_url: str = ""
 
 
-class SqlOtpIssuer:
-    """Адаптер OtpIssuer: генерация и хэширование OTP остаются в монолите."""
+INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://127.0.0.1:8000")
+OTP_ISSUER_MODE = os.getenv("OTP_ISSUER_MODE", "local")
+ALLOWLIST_STORE_MODE = os.getenv("ALLOWLIST_STORE_MODE", "local")
 
-    def __init__(self, session_factory):
-        self._session_factory = session_factory
+LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
+LOCAL_ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)
 
-    async def issue(self, telegram_user_id: int) -> str:
-        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        code = "".join(secrets.choice(alphabet) for _ in range(8))
+# Серверная сторона внутренних API всегда на локальных адаптерах.
+# Потребители выбирают реализацию флагами: local (in-process) или http (контракт).
+OTP_ISSUER = LOCAL_OTP_ISSUER if OTP_ISSUER_MODE == "local" else HttpOtpIssuer(INTERNAL_BASE_URL)
+ALLOWLIST_STORE = (
+    LOCAL_ALLOWLIST_STORE if ALLOWLIST_STORE_MODE == "local" else HttpAllowlistStore(BOT_SERVICE_URL)
+)
 
-        async with self._session_factory() as session:
-            old = await session.execute(
-                select(OneTimePasscode).where(
-                    OneTimePasscode.generated_by_telegram_id == telegram_user_id,
-                    OneTimePasscode.revoked == False,
-                )
-            )
-            for old_code in old.scalars().all():
-                old_code.revoked = True
-
-            session.add(
-                OneTimePasscode(
-                    code_hash=ph.hash(code),
-                    revoked=False,
-                    generated_by_telegram_id=telegram_user_id,
-                    expires_at=utcnow() + timedelta(seconds=300),
-                )
-            )
-            await session.commit()
-
-        return code
-
-
-ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)
-OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
 TG_RATE_LIMITER = TgRateLimiter(max_requests=5, window_seconds=60)
-
 DP.include_router(create_router(OTP_ISSUER, ALLOWLIST_STORE, TG_RATE_LIMITER))
 
 
@@ -227,6 +206,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(BotBase.metadata.create_all)
+        await conn.run_sync(OtpBase.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
         admin = await session.get(AdminCredential, 1)
@@ -270,6 +250,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Announcement Board Backend", lifespan=lifespan)
+
+app.include_router(create_otp_router(LOCAL_OTP_ISSUER))
+app.include_router(create_allowlist_router(LOCAL_ALLOWLIST_STORE))
 
 app.add_middleware(
     CORSMiddleware,

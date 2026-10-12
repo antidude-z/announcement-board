@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from bot.interfaces import AllowlistEntry
+from ports import AllowlistEntry
 from bot.models import TelegramAllowlist
 
 

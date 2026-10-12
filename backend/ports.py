@@ -21,6 +21,4 @@ class AllowlistStore(Protocol):
 
 @runtime_checkable
 class OtpIssuer(Protocol):
-    """Выдаёт plaintext-код ровно один раз. Генерация/хэш — ответственность монолита."""
-
     async def issue(self, telegram_user_id: int) -> str: ...
