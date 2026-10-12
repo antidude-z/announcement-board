@@ -18,6 +18,7 @@ from sqlalchemy.orm import declarative_base
 
 from auth import (
     AuthBase,
+    PasscodeVerifier,
     SqlAdminCredentialRepository,
     create_auth_router,
     require_admin,
@@ -28,7 +29,7 @@ from integrations.telegram_allowlist import (
     HttpTelegramAllowlistGateway,
     TelegramAllowlistGateway,
 )
-from otp import OtpBase, SqlOtpIssuer, SqlOtpVerifier
+from otp import OtpBase, PasscodeIssuer, SqlOtpIssuer, SqlOtpVerifier
 from otp.api import create_otp_router
 from ratelimit import InMemoryRateLimiter
 
@@ -80,13 +81,13 @@ class PostIn(BaseModel):
 
 BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://bot:8001")
 
-LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
+PASSCODE_ISSUER: PasscodeIssuer = SqlOtpIssuer(AsyncSessionLocal)
 TELEGRAM_ALLOWLIST_GATEWAY: TelegramAllowlistGateway = HttpTelegramAllowlistGateway(
     BOT_SERVICE_URL
 )
 
 ADMIN_REPO = SqlAdminCredentialRepository(AsyncSessionLocal)
-OTP_VERIFIER = SqlOtpVerifier(AsyncSessionLocal)
+PASSCODE_VERIFIER: PasscodeVerifier = SqlOtpVerifier(AsyncSessionLocal)
 LOGIN_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
 OTP_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
 
@@ -119,9 +120,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Announcement Board Backend", lifespan=lifespan)
 
-app.include_router(create_otp_router(LOCAL_OTP_ISSUER))
+app.include_router(create_otp_router(PASSCODE_ISSUER))
 app.include_router(
-    create_auth_router(ADMIN_REPO, OTP_VERIFIER, LOGIN_LIMITER, OTP_LIMITER)
+    create_auth_router(ADMIN_REPO, PASSCODE_VERIFIER, LOGIN_LIMITER, OTP_LIMITER)
 )
 
 app.add_middleware(

@@ -3,14 +3,15 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command, CommandStart
 
-from ports import AllowlistStore, OtpIssuer
+from bot.ports import PasscodeIssuer
 from bot.rate_limit import TgRateLimiter
+from ports import AllowlistStore
 
 logger = logging.getLogger("legacy-backend.bot")
 
 
 def create_router(
-    otp_issuer: OtpIssuer,
+    passcode_issuer: PasscodeIssuer,
     allowlist_store: AllowlistStore,
     rate_limiter: TgRateLimiter,
 ) -> Router:
@@ -23,6 +24,7 @@ def create_router(
 
         telegram_id = message.from_user.id
         username = message.from_user.username
+
         logger.info("handle_get_code for telegram_id=%s", telegram_id)
 
         if rate_limiter.is_limited(telegram_id):
@@ -37,11 +39,12 @@ def create_router(
         if username:
             await allowlist_store.set_username(telegram_id, username)
 
-        code = await otp_issuer.issue(telegram_id)
+        code = await passcode_issuer.issue(telegram_id)
         logger.info("issued OTP for telegram_id=%s", telegram_id)
+
         await message.answer(
-            "Your one-time passcode is:\n\n"
-            f"{code}\n\n"
+            "Your one-time passcode is:\n"
+            f"{code}\n"
             "It expires in 5 minutes and can be used once."
         )
 
