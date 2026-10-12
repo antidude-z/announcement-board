@@ -5,12 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from auth.credentials import SqlAdminCredentialRepository
 from auth.dependencies import optional_principal
-from auth.ports import PasscodeVerifier
-from auth.repository import SqlAdminCredentialRepository
 from auth.sessions import SESSION_REGISTRY, create_session_token
 from auth.tokens import SessionPrincipal, clear_session_cookie, set_session_cookie
 from hashing import hash_secret, needs_rehash, verify_secret
+from otp import SqlOtpVerifier
 from ratelimit import InMemoryRateLimiter
 
 logger = logging.getLogger("legacy-backend.auth")
@@ -26,7 +26,7 @@ class OtpVerify(BaseModel):
 
 def create_auth_router(
     repo: SqlAdminCredentialRepository,
-    passcode_verifier: PasscodeVerifier,
+    passcode_verifier: SqlOtpVerifier,
     login_limiter: InMemoryRateLimiter,
     otp_limiter: InMemoryRateLimiter,
 ) -> APIRouter:

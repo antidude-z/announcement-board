@@ -77,11 +77,11 @@ class PostIn(BaseModel):
 
 BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://bot:8001")
 
-PASSCODE_ISSUER: SqlOtpIssuer = SqlOtpIssuer(AsyncSessionLocal)
+PASSCODE_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
 BOT_SERVICE_CLIENT = BotServiceClient(BOT_SERVICE_URL)
 
 ADMIN_REPO = SqlAdminCredentialRepository(AsyncSessionLocal)
-PASSCODE_VERIFIER: SqlOtpVerifier = SqlOtpVerifier(AsyncSessionLocal)
+PASSCODE_VERIFIER = SqlOtpVerifier(AsyncSessionLocal)
 LOGIN_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
 OTP_LIMITER = InMemoryRateLimiter(max_requests=5, window_seconds=60)
 

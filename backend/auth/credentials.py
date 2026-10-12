@@ -1,9 +1,25 @@
+from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 
-from auth.models import AdminCredential
 from hashing import hash_secret
+
+Base = declarative_base()
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+class AdminCredential(Base):
+    __tablename__ = "admin_credentials"
+
+    id = Column(Integer, primary_key=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
 class SqlAdminCredentialRepository:
