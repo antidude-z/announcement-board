@@ -43,8 +43,8 @@ def create_router(
         logger.info("issued OTP for telegram_id=%s", telegram_id)
 
         await message.answer(
-            "Your one-time passcode is:\n"
-            f"{code}\n"
+            "Your one-time passcode is:\n\n"
+            f"{code}\n\n"
             "It expires in 5 minutes and can be used once."
         )
 

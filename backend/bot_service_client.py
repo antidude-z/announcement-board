@@ -1,14 +1,21 @@
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 import httpx
 
-from integrations.telegram_allowlist.dto import TelegramAllowlistEntry
 from m2m import internal_headers
 
 
-class HttpTelegramAllowlistGateway:
-    """HTTP-адаптер к /internal/allowlist* в bot-service."""
+@dataclass(frozen=True, slots=True)
+class TelegramAllowlistEntry:
+    telegram_user_id: int
+    username: Optional[str]
+    added_at: Optional[datetime]
+
+
+class BotServiceClient:
+    """HTTP-клиент bot-service: управление Telegram allowlist."""
 
     def __init__(
         self,
@@ -34,7 +41,7 @@ class HttpTelegramAllowlistGateway:
             response.raise_for_status()
             return response.json()
 
-    async def list_all(self) -> list[TelegramAllowlistEntry]:
+    async def list_telegram_users(self) -> list[TelegramAllowlistEntry]:
         data = await self._request("GET", "/internal/allowlist")
 
         return [
@@ -50,7 +57,7 @@ class HttpTelegramAllowlistGateway:
             for item in data["items"]
         ]
 
-    async def add(self, telegram_user_id: int) -> bool:
+    async def add_telegram_user(self, telegram_user_id: int) -> bool:
         data = await self._request(
             "POST",
             "/internal/allowlist",
@@ -58,7 +65,7 @@ class HttpTelegramAllowlistGateway:
         )
         return bool(data["created"])
 
-    async def remove(self, telegram_user_id: int) -> bool:
+    async def remove_telegram_user(self, telegram_user_id: int) -> bool:
         try:
             await self._request(
                 "DELETE",
