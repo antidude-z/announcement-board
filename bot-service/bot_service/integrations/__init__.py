@@ -1,1 +1,0 @@
-"""Integration adapters used by bot-service."""

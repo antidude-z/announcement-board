@@ -3,16 +3,16 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command, CommandStart
 
-from bot_service.allowlist.ports import AllowlistRepository
-from bot_service.integrations.otp.ports import PasscodeIssuer
+from bot_service.allowlist.repository import SqlAllowlistRepository
+from bot_service.otp_client import HttpOtpIssuer
 from bot_service.telegram.rate_limit import TgRateLimiter
 
 logger = logging.getLogger("bot-service.telegram")
 
 
 def create_router(
-    passcode_issuer: PasscodeIssuer,
-    allowlist_repository: AllowlistRepository,
+    passcode_issuer: HttpOtpIssuer,
+    allowlist_repository: SqlAllowlistRepository,
     rate_limiter: TgRateLimiter,
 ) -> Router:
     router = Router()

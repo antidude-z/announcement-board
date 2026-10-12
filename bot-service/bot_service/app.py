@@ -1,13 +1,3 @@
-"""Отдельный процесс bot-service.
-
-Владеет:
-- aiogram polling;
-- internal API allowlist;
-- БД board_bot.
-
-Выдачу OTP делегирует backend через POST /internal/otp/issue.
-"""
-
 import asyncio
 import logging
 import os
@@ -18,9 +8,8 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from bot_service.allowlist.api import create_allowlist_router
-from bot_service.allowlist.models import Base as AllowlistBase
-from bot_service.allowlist.repository import SqlAllowlistRepository
-from bot_service.integrations.otp.http_issuer import HttpOtpIssuer
+from bot_service.allowlist.repository import SqlAllowlistRepository, Base as AllowlistBase
+from bot_service.otp_client import HttpOtpIssuer
 from bot_service.telegram.handlers import create_router
 from bot_service.telegram.rate_limit import TgRateLimiter
 

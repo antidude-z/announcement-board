@@ -1,1 +1,0 @@
-"""Shared infrastructure primitives for bot-service."""

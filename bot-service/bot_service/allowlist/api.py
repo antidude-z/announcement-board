@@ -3,8 +3,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from bot_service.allowlist.ports import AllowlistRepository
-from bot_service.common.m2m import require_internal_token
+from bot_service.allowlist.repository import SqlAllowlistRepository
+from bot_service.internal_auth import require_internal_token
 
 logger = logging.getLogger("bot-service.allowlist.api")
 
@@ -17,12 +17,13 @@ class UsernameRequest(BaseModel):
     username: str
 
 
-def create_allowlist_router(repository: AllowlistRepository) -> APIRouter:
+def create_allowlist_router(repository: SqlAllowlistRepository) -> APIRouter:
     router = APIRouter(tags=["internal-allowlist"])
 
     @router.get("/internal/allowlist", dependencies=[Depends(require_internal_token)])
     async def list_all():
         entries = await repository.list_all()
+
         return {
             "items": [
                 {
