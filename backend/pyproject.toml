@@ -51,3 +51,9 @@ name = "monolith must not import bot_service"
 type = "forbidden"
 source_modules = ["main"]
 forbidden_modules = ["bot_service"]
+
+[[tool.importlinter.contracts]]
+name = "monolith must not import aiogram (polling lives in bot-service)"
+type = "forbidden"
+source_modules = ["main"]
+forbidden_modules = ["aiogram"]

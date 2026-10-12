@@ -25,16 +25,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-real-life}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-ChangeMe_Admin_123!}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      UPLOAD_DIR: /tmp/uploads
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token-change-me}
-      OTP_ISSUER_MODE: ${OTP_ISSUER_MODE:-local}
-      BOT_MODE: ${BOT_MODE:-internal}
-      INTERNAL_BASE_URL: ${INTERNAL_BASE_URL:-http://127.0.0.1:8000}
       BOT_SERVICE_URL: ${BOT_SERVICE_URL:-http://bot:8001}
-      BOT_DATABASE_URL: ${BOT_DATABASE_URL:-postgresql+asyncpg://board:board@db:5432/board_bot}
-      ALLOWLIST_DUAL_WRITE: ${ALLOWLIST_DUAL_WRITE:-true}
-      ALLOWLIST_READ_SOURCE: ${ALLOWLIST_READ_SOURCE:-bot}
+      UPLOAD_DIR: /tmp/uploads
     volumes:
       - uploads:/tmp/uploads
     ports:

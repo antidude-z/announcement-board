@@ -1,7 +1,6 @@
 """Bounded context: Telegram Access Control + OTP delivery."""
 
 from bot.api import create_allowlist_router
-from bot.dual_write import DualWriteAllowlistStore
 from bot.handlers import create_router
 from bot.http_clients import HttpAllowlistStore, HttpOtpIssuer
 from bot.models import Base as BotBase
@@ -15,6 +14,5 @@ __all__ = [
     "SqlAllowlistStore",
     "TgRateLimiter",
     "create_allowlist_router",
-    "create_router",
-    "DualWriteAllowlistStore",
+    "create_router"
 ]

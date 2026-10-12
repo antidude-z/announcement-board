@@ -8,23 +8,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from bot import (
-    BotBase,
-    HttpAllowlistStore,
-    HttpOtpIssuer,
-    SqlAllowlistStore,
-    TgRateLimiter,
-    create_allowlist_router,
-    create_router,
-    DualWriteAllowlistStore,
-)
+from bot import HttpAllowlistStore
 from otp import OtpBase, SqlOtpIssuer
 from otp.api import create_otp_router
 from otp.models import OneTimePasscode
 
 import aiofiles
 import jwt
-from aiogram import Bot, Dispatcher
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import FastAPI, File, Query, Request, UploadFile
@@ -53,7 +43,6 @@ COOKIE_NAME = "session"
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
 
 ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "ChangeMe_Admin_123!")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 UPLOAD_DIR = pathlib.Path(os.getenv("UPLOAD_DIR", "/tmp/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,9 +50,6 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # GLOBAL STATE
 RATE_CACHE = {}
 ACTIVE_SESSIONS = {}
-BOT = None
-BOT_POLL_TASK = None
-DP = Dispatcher()
 
 ph = PasswordHasher(type=Type.ID)
 Base = declarative_base()
@@ -114,44 +100,10 @@ class PostIn(BaseModel):
     tags: str = ""
     video_url: str = ""
 
-
-BOT_MODE = os.getenv("BOT_MODE", "internal")  # internal | external
 BOT_SERVICE_URL = os.getenv("BOT_SERVICE_URL", "http://bot:8001")
-INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8000")
-OTP_ISSUER_MODE = os.getenv("OTP_ISSUER_MODE", "local")
-ALLOWLIST_DUAL_WRITE = os.getenv("ALLOWLIST_DUAL_WRITE", "true").lower() == "true"
-ALLOWLIST_READ_SOURCE = os.getenv("ALLOWLIST_READ_SOURCE", "bot")
 
 LOCAL_OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
-LEGACY_ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)
-
-bot_engine = None
-
-if BOT_MODE == "external":
-    # Шаг 4: allowlist живёт в bot-service и его БД.
-    # Монолит не открывает соединений в БД бота и не запускает polling.
-    LOCAL_ALLOWLIST_STORE = LEGACY_ALLOWLIST_STORE
-    ALLOWLIST_STORE = HttpAllowlistStore(BOT_SERVICE_URL)
-    OTP_ISSUER = LOCAL_OTP_ISSUER
-    print("BOT_MODE=external: polling and allowlist API run in bot-service")
-else:
-    bot_engine = create_async_engine(BOT_DATABASE_URL, pool_pre_ping=True)
-    BotSessionLocal = async_sessionmaker(bot_engine, expire_on_commit=False)
-    BOT_ALLOWLIST_STORE = SqlAllowlistStore(BotSessionLocal)
-
-    if ALLOWLIST_READ_SOURCE == "legacy":
-        _read_store, _mirror_store = LEGACY_ALLOWLIST_STORE, BOT_ALLOWLIST_STORE
-    else:
-        _read_store, _mirror_store = BOT_ALLOWLIST_STORE, LEGACY_ALLOWLIST_STORE
-
-    LOCAL_ALLOWLIST_STORE = (
-        DualWriteAllowlistStore(_read_store, _mirror_store) if ALLOWLIST_DUAL_WRITE else _read_store
-    )
-    ALLOWLIST_STORE = LOCAL_ALLOWLIST_STORE
-    OTP_ISSUER = LOCAL_OTP_ISSUER if OTP_ISSUER_MODE == "local" else HttpOtpIssuer(INTERNAL_BASE_URL)
-
-    TG_RATE_LIMITER = TgRateLimiter(max_requests=5, window_seconds=60)
-    DP.include_router(create_router(OTP_ISSUER, ALLOWLIST_STORE, TG_RATE_LIMITER))
+ALLOWLIST_STORE = HttpAllowlistStore(BOT_SERVICE_URL)
 
 
 def is_rate_limited(key: str, max_requests: int = 5, window_seconds: int = 60) -> bool:
@@ -209,88 +161,29 @@ def serialize_announcement(post: Announcement) -> dict:
         "updated_at": post.updated_at.isoformat() if post.updated_at else None,
     }
 
-async def _run_bot_polling():
-    try:
-        logger.info("aiogram polling task started")
-        await DP.start_polling(BOT)
-    except asyncio.CancelledError:
-        logger.info("aiogram polling task cancelled")
-        raise
-    except Exception:
-        logger.exception("aiogram polling crashed")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global BOT, BOT_POLL_TASK
-
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(BotBase.metadata.create_all)
         await conn.run_sync(OtpBase.metadata.create_all)
-
-    if bot_engine is not None:
-        try:
-            async with bot_engine.begin() as conn:
-                await conn.run_sync(BotBase.metadata.create_all)
-        except Exception as exc:
-            raise RuntimeError(
-                "Bot database is not ready. Run first: python scripts/prepare_bot_db.py"
-            ) from exc
 
     async with AsyncSessionLocal() as session:
         admin = await session.get(AdminCredential, 1)
         if not admin:
             session.add(
-                AdminCredential(
-                    id=1,
-                    password_hash=ph.hash(ADMIN_INITIAL_PASSWORD),
-                )
+                AdminCredential(id=1, password_hash=ph.hash(ADMIN_INITIAL_PASSWORD))
             )
             await session.commit()
 
-    if BOT_MODE == "internal":
-        if TELEGRAM_BOT_TOKEN:
-            try:
-                BOT = Bot(token=TELEGRAM_BOT_TOKEN)
-                logger.info("Starting Telegram bot polling (monolith, internal mode)...")
-                BOT_POLL_TASK = asyncio.create_task(_run_bot_polling())
-            except Exception:
-                logger.exception("Failed to initialize Telegram bot")
-                BOT = None
-                BOT_POLL_TASK = None
-        else:
-            logger.warning("TELEGRAM_BOT_TOKEN is empty/whitespace; Telegram bot disabled")
-    else:
-        logger.info("BOT_MODE=external: Telegram polling runs in bot-service")
-
     yield
 
-    if BOT_POLL_TASK:
-        BOT_POLL_TASK.cancel()
-        try:
-            await BOT_POLL_TASK
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception("Error while stopping bot task")
-
-    if BOT:
-        try:
-            await BOT.session.close()
-        except Exception:
-            logger.exception("Error closing bot session")
-
-    if bot_engine is not None:
-        await bot_engine.dispose()
+    await engine.dispose()
 
 
 app = FastAPI(title="Announcement Board Backend", lifespan=lifespan)
 
 app.include_router(create_otp_router(LOCAL_OTP_ISSUER))
-if BOT_MODE == "internal":
-    # В external этот API живёт в bot-service (bot/api.py уехал туда как есть).
-    app.include_router(create_allowlist_router(LOCAL_ALLOWLIST_STORE))
 
 app.add_middleware(
     CORSMiddleware,
