@@ -17,3 +17,18 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.1",
+]
+
+[tool.importlinter]
+root_packages = ["main", "bot"]
+
+[[tool.importlinter.contracts]]
+name = "bot must not know about the monolith"
+type = "forbidden"
+source_modules = ["bot"]
+forbidden_modules = ["main"]
+# когда появится пакет feed, добавь контракт independence: bot <-> feed

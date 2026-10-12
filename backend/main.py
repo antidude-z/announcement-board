@@ -8,10 +8,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from bot import BotBase, SqlAllowlistStore, TgRateLimiter, create_router
+
 import aiofiles
 import jwt
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, CommandStart
+from aiogram import Bot, Dispatcher
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import FastAPI, File, Query, Request, UploadFile
@@ -71,14 +72,6 @@ class AdminCredential(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
-class TelegramAllowlist(Base):
-    __tablename__ = "telegram_allowlist"
-
-    telegram_user_id = Column(BigInteger, primary_key=True)
-    username = Column(String, nullable=True)
-    added_at = Column(DateTime(timezone=True), default=utcnow)
-
-
 class OneTimePasscode(Base):
     __tablename__ = "one_time_passcodes"
 
@@ -119,6 +112,46 @@ class PostIn(BaseModel):
     body_md: str
     tags: str = ""
     video_url: str = ""
+
+
+class SqlOtpIssuer:
+    """Адаптер OtpIssuer: генерация и хэширование OTP остаются в монолите."""
+
+    def __init__(self, session_factory):
+        self._session_factory = session_factory
+
+    async def issue(self, telegram_user_id: int) -> str:
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        code = "".join(secrets.choice(alphabet) for _ in range(8))
+
+        async with self._session_factory() as session:
+            old = await session.execute(
+                select(OneTimePasscode).where(
+                    OneTimePasscode.generated_by_telegram_id == telegram_user_id,
+                    OneTimePasscode.revoked == False,
+                )
+            )
+            for old_code in old.scalars().all():
+                old_code.revoked = True
+
+            session.add(
+                OneTimePasscode(
+                    code_hash=ph.hash(code),
+                    revoked=False,
+                    generated_by_telegram_id=telegram_user_id,
+                    expires_at=utcnow() + timedelta(seconds=300),
+                )
+            )
+            await session.commit()
+
+        return code
+
+
+ALLOWLIST_STORE = SqlAllowlistStore(AsyncSessionLocal)
+OTP_ISSUER = SqlOtpIssuer(AsyncSessionLocal)
+TG_RATE_LIMITER = TgRateLimiter(max_requests=5, window_seconds=60)
+
+DP.include_router(create_router(OTP_ISSUER, ALLOWLIST_STORE, TG_RATE_LIMITER))
 
 
 def is_rate_limited(key: str, max_requests: int = 5, window_seconds: int = 60) -> bool:
@@ -193,6 +226,7 @@ async def lifespan(app: FastAPI):
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(BotBase.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
         admin = await session.get(AdminCredential, 1)
@@ -553,22 +587,17 @@ async def list_telegram_users(request: Request):
     if jwt_payload.get("role") != "admin":
         return JSONResponse(status_code=403, content={"detail": "Admin required"})
 
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(TelegramAllowlist).order_by(TelegramAllowlist.added_at.desc())
-        )
-        rows = result.scalars().all()
-
-        return {
-            "items": [
-                {
-                    "telegram_user_id": row.telegram_user_id,
-                    "username": row.username,
-                    "added_at": row.added_at.isoformat() if row.added_at else None,
-                }
-                for row in rows
-            ]
-        }
+    entries = await ALLOWLIST_STORE.list_all()
+    return {
+        "items": [
+            {
+                "telegram_user_id": e.telegram_user_id,
+                "username": e.username,
+                "added_at": e.added_at.isoformat() if e.added_at else None,
+            }
+            for e in entries
+        ]
+    }
 
 
 @app.post("/api/telegram-users")
@@ -588,27 +617,8 @@ async def add_telegram_user(payload: TelegramUserIn, request: Request):
     if payload.telegram_user_id <= 0:
         return JSONResponse(status_code=400, content={"detail": "Invalid Telegram user id"})
 
-    async with AsyncSessionLocal() as session:
-        existing = await session.get(TelegramAllowlist, payload.telegram_user_id)
-        if existing:
-            return {
-                "telegram_user_id": existing.telegram_user_id,
-                "username": existing.username,
-                "already_exists": True,
-            }
-
-        entry = TelegramAllowlist(
-            telegram_user_id=payload.telegram_user_id,
-            username=None,
-        )
-        session.add(entry)
-        await session.commit()
-
-        return {
-            "telegram_user_id": entry.telegram_user_id,
-            "username": entry.username,
-            "already_exists": False,
-        }
+    created = await ALLOWLIST_STORE.add(payload.telegram_user_id)
+    return {"telegram_user_id": payload.telegram_user_id, "already_exists": not created}
 
 
 @app.delete("/api/telegram-users/{telegram_user_id}")
@@ -625,14 +635,11 @@ async def delete_telegram_user(telegram_user_id: int, request: Request):
     if jwt_payload.get("role") != "admin":
         return JSONResponse(status_code=403, content={"detail": "Admin required"})
 
-    async with AsyncSessionLocal() as session:
-        entry = await session.get(TelegramAllowlist, telegram_user_id)
-        if not entry:
-            return JSONResponse(status_code=404, content={"detail": "Telegram user not found"})
-
-        await session.delete(entry)
-        await session.commit()
-        return {"ok": True}
+    removed = await ALLOWLIST_STORE.remove(telegram_user_id)
+    if not removed:
+        return JSONResponse(status_code=404, content={"detail": "Telegram user not found"})
+    
+    return {"ok": True}
 
 
 @app.post("/api/uploads")
@@ -667,72 +674,6 @@ async def upload_image(request: Request, file: UploadFile = File(...)):
         await fh.write(content)
 
     return {"url": f"/uploads/{safe_name}"}
-
-
-async def handle_get_code(message: types.Message):
-    if not message.from_user:
-        return
-
-    telegram_id = message.from_user.id
-    username = message.from_user.username
-
-    if is_rate_limited(f"tg:{telegram_id}", 5, 60):
-        await message.answer("Rate limited. Try again in a minute.")
-        return
-
-    async with AsyncSessionLocal() as session:
-        allowed = await session.get(TelegramAllowlist, telegram_id)
-
-        if not allowed:
-            await message.answer("Access Denied: Telegram ID is not authorized.")
-            return
-
-        if username and allowed.username != username:
-            allowed.username = username
-            await session.commit()
-
-        old_codes = await session.execute(
-            select(OneTimePasscode).where(
-                OneTimePasscode.generated_by_telegram_id == telegram_id,
-                OneTimePasscode.revoked == False,
-            )
-        )
-
-        for old_code in old_codes.scalars().all():
-            old_code.revoked = True
-
-        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        code = "".join(secrets.choice(alphabet) for _ in range(8))
-
-        otp = OneTimePasscode(
-            code_hash=ph.hash(code),
-            revoked=False,
-            generated_by_telegram_id=telegram_id,
-            expires_at=utcnow() + timedelta(seconds=300),
-        )
-
-        session.add(otp)
-        await session.commit()
-
-        await message.answer(
-            "Your one-time passcode is:\n\n"
-            f"{code}\n\n"
-            "It expires in 5 minutes and can be used once."
-        )
-
-
-@DP.message(CommandStart())
-async def bot_start(message: types.Message):
-    user_id = message.from_user.id if message.from_user else "unknown"
-    logger.info("bot /start from user_id=%s", user_id)
-    await handle_get_code(message)
-
-
-@DP.message(Command("get_code"))
-async def bot_get_code(message: types.Message):
-    user_id = message.from_user.id if message.from_user else "unknown"
-    logger.info("bot /get_code from user_id=%s", user_id)
-    await handle_get_code(message)
 
 
 if __name__ == "__main__":
