@@ -12,14 +12,14 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-ins
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
+RUN mkdir uploads
+
 # STAGE 2 - RUNTIME
 FROM gcr.io/distroless/python3-debian12:nonroot AS runtime
 
 WORKDIR /app
 
 COPY --from=builder --chown=nonroot:nonroot /app /app
-
-RUN mkdir -p /app/uploads && chown -R nonroot:nonroot /app/uploads
 
 ENV PYTHONPATH="/app/.venv/lib/python3.11/site-packages:/app" \
     PYTHONUNBUFFERED=1
