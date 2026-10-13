@@ -26,9 +26,9 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-ChangeMe_Admin_123!}
       BOT_SERVICE_URL: ${BOT_SERVICE_URL:-http://bot:8001}
-      UPLOAD_DIR: /tmp/uploads
+      UPLOAD_DIR: /app/uploads
     volumes:
-      - uploads:/tmp/uploads
+      - uploads:/app/uploads
 
   bot:
     build: ./bot-service
