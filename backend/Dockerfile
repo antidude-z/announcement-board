@@ -22,6 +22,8 @@ ENV PYTHONUNBUFFERED=1
 COPY --from=builder /app/.venv/lib/python3.12/site-packages /app/.venv/lib/python3.12/site-packages
 COPY --from=builder --chown=nonroot:nonroot /app /app
 
+ENV PYTHONPATH="/app/.venv/lib/python3.11/site-packages:/app"
+
 EXPOSE 8000
 
 CMD ["/app/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
