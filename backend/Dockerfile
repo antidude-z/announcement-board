@@ -19,6 +19,8 @@ WORKDIR /app
 
 COPY --from=builder --chown=nonroot:nonroot /app /app
 
+RUN mkdir -p /app/uploads && chown -R nonroot:nonroot /app/uploads
+
 ENV PYTHONPATH="/app/.venv/lib/python3.11/site-packages:/app" \
     PYTHONUNBUFFERED=1
 
