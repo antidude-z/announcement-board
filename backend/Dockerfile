@@ -17,11 +17,10 @@ FROM gcr.io/distroless/python3-debian12:nonroot AS runtime
 
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
-
 COPY --from=builder --chown=nonroot:nonroot /app /app
 
-ENV PYTHONPATH="/app/.venv/lib/python3.11/site-packages:/app"
+ENV PYTHONPATH="/app/.venv/lib/python3.11/site-packages:/app" \
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
